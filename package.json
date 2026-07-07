@@ -1,0 +1,60 @@
+{
+  "name": "screenshare-annotate",
+  "productName": "Screenshare Annotate",
+  "version": "0.1.0",
+  "description": "Collaborative annotation overlay for any shared screen or window",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "share": "electron . --profile=share",
+    "view": "electron . --profile=view",
+    "server": "node server/server.js",
+    "icon": "node scripts/make-icon.js",
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir"
+  },
+  "author": "Dylan Huang",
+  "license": "MIT",
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.dylanhuang.screenshare-annotate",
+    "productName": "Screenshare Annotate",
+    "directories": { "output": "dist" },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "!server/**",
+      "!scripts/**",
+      "!dist/**"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "dylan40907",
+        "repo": "screenshare-annotate"
+      }
+    ],
+    "asarUnpack": [
+      "src/win/**"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Screenshare Annotate"
+    }
+  }
+}

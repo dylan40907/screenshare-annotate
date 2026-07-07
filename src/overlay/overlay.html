@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Annotate Overlay</title>
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <div id="banner" class="banner"></div>
+
+  <div id="toolbar">
+    <div class="grip" id="grip" title="Drag to move the toolbar">⠿</div>
+
+    <div class="group modes">
+      <button data-mode="idle" class="mode active" title="Pass clicks through to the app underneath">Idle</button>
+      <button data-mode="align" class="mode viewer-only" title="Align to the share">Align</button>
+      <button data-mode="draw" class="mode" title="Draw annotations">Draw</button>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="group tools">
+      <button data-tool="pen" class="tool active" title="Pen">✏️</button>
+      <button data-tool="line" class="tool" title="Line">╱</button>
+      <button data-tool="arrow" class="tool" title="Arrow">➤</button>
+      <button data-tool="rect" class="tool" title="Rectangle">▭</button>
+      <button data-tool="circle" class="tool" title="Ellipse">◯</button>
+      <button data-tool="text" class="tool" title="Text">T</button>
+      <button data-tool="eraser" class="tool" title="Erase strokes">⌫</button>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="group colors" id="colors"></div>
+
+    <div class="sep"></div>
+
+    <div class="group widths" id="widths"></div>
+
+    <div class="sep"></div>
+
+    <div class="group actions">
+      <button id="calib" class="sharer-only" title="Toggle calibration brackets">🎯</button>
+      <button id="undo" title="Undo my last stroke">↶</button>
+      <button id="redo" title="Redo">↷</button>
+      <button id="clear" title="Clear everything">🗑️</button>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="group status">
+      <span id="dot" class="dot"></span>
+      <button id="disconnect" title="Disconnect">✕</button>
+    </div>
+  </div>
+
+  <input id="textInput" class="text-input" style="display:none" />
+
+  <script src="overlay.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# Fly.io config for the sync server - tuned to stay ALWAYS ON (no cold starts),
+# which matters for a WebSocket server (a cold start would drop everyone).
+# Rename the app to something unique before `fly deploy`.
+app = "screenshare-annotate"
+primary_region = "iad"   # pick the region nearest your users
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 4321
+  force_https = true          # gives you wss:// for free
+  auto_stop_machines = false  # never scale to zero -> no cold starts
+  auto_start_machines = true
+  min_machines_running = 1    # keep one machine up at all times
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"            # plenty for a relay; the cheapest tier

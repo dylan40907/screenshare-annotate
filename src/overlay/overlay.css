@@ -1,0 +1,124 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+
+/* The canvas fills the window but never eats clicks itself - pointer logic is
+   handled on the document so the toolbar (which sits above) keeps its clicks. */
+#canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 21, 24, 0.85);
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  pointer-events: none;
+  display: none;
+  white-space: nowrap;
+}
+
+#toolbar {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(30, 31, 34, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+.group { display: flex; align-items: center; gap: 3px; }
+.sep { width: 1px; height: 22px; background: rgba(255,255,255,0.12); margin: 0 4px; }
+
+.grip {
+  cursor: grab;
+  color: #80848e;
+  font-size: 16px;
+  padding: 0 6px 0 2px;
+  user-select: none;
+  touch-action: none;
+}
+.grip:active { cursor: grabbing; }
+
+#toolbar button {
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: #dbdee1;
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+}
+#toolbar button:hover { background: rgba(255,255,255,0.08); }
+#toolbar button.active { background: #5170ff; border-color: #5170ff; color: #fff; }
+.mode { font-size: 12px; font-weight: 600; }
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.swatch.active { border-color: #fff; }
+
+.wbtn {
+  width: 26px !important;
+  height: 26px !important;
+  min-width: 26px !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wbtn .dotw { background: currentColor; border-radius: 50%; }
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f0b232;
+  display: inline-block;
+  margin: 0 4px;
+}
+.dot.on { background: #23a55a; }
+.dot.off { background: #f23f43; }
+
+.text-input {
+  position: absolute;
+  background: rgba(0,0,0,0.35);
+  border: 1px dashed #fff;
+  color: #fff;
+  font-family: inherit;
+  outline: none;
+  padding: 2px 4px;
+  pointer-events: auto;
+  z-index: 10;
+}
