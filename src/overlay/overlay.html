@@ -9,6 +9,7 @@
   <canvas id="canvas"></canvas>
 
   <div id="banner" class="banner"></div>
+  <div id="toast" class="toast"></div>
 
   <div id="toolbar">
     <div class="grip" id="grip" title="Drag to move the toolbar">⠿</div>
@@ -43,6 +44,8 @@
 
     <div class="group actions">
       <button id="calib" class="sharer-only" title="Toggle calibration brackets">🎯</button>
+      <button id="copylink" title="Copy a link others can click to join this room as a viewer">🔗</button>
+      <button id="screenshot" title="Save a screenshot">📷</button>
       <button id="undo" title="Undo my last stroke">↶</button>
       <button id="redo" title="Redo">↷</button>
       <button id="clear" title="Clear everything">🗑️</button>
@@ -52,8 +55,16 @@
 
     <div class="group status">
       <span id="dot" class="dot"></span>
+      <button id="minimize" title="Minimize toolbar">–</button>
       <button id="disconnect" title="Disconnect">✕</button>
     </div>
+  </div>
+
+  <div id="miniBar">
+    <div class="grip" id="miniGrip" title="Drag to move">⠿</div>
+    <button id="expand" title="Show the draw bar">⤢&nbsp; Expand draw bar</button>
+    <div class="sep"></div>
+    <button id="miniDisconnect" title="Disconnect">✕</button>
   </div>
 
   <input id="textInput" class="text-input" style="display:none" />

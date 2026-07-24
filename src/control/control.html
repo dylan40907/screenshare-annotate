@@ -7,53 +7,74 @@
 </head>
 <body>
   <div class="card">
-    <h1>Screenshare Annotate</h1>
-    <p class="sub">Draw on any shared screen or window, together - in real time.</p>
-
-    <label>Sync server</label>
-    <input id="server" type="text" placeholder="ws://localhost:4321" />
-
-    <label>Room</label>
-    <input id="room" type="text" placeholder="team-standup" />
-
-    <label>Your name</label>
-    <input id="name" type="text" placeholder="Dylan" />
-
-    <label>Role</label>
-    <div class="choices">
-      <button class="choice role active" data-role="share">Share</button>
-      <button class="choice role" data-role="view">View</button>
+    <div class="header">
+      <div>
+        <h1>Screenshare Annotate</h1>
+        <p class="sub">Draw on any shared screen or window, together, in real time.</p>
+      </div>
+      <button id="gear" class="gear" title="Settings">⚙</button>
     </div>
 
-    <!-- SHARER: choose what to share -->
-    <div id="shareOnly">
-      <label>What are you sharing?</label>
+    <!-- MAIN VIEW -->
+    <div id="mainView">
+      <label>Room</label>
+      <input id="room" type="text" placeholder="room name" />
+
+      <label>Role</label>
       <div class="choices">
-        <button class="choice stype active" data-stype="window">Application</button>
-        <button class="choice stype" data-stype="screen">Entire screen</button>
+        <button class="choice role active" data-role="share">Share</button>
+        <button class="choice role" data-role="view">View</button>
       </div>
 
-      <div id="windowPick">
-        <label>Application window
-          <button id="refreshWins" class="mini">↻ refresh</button>
-        </label>
-        <select id="windowSel"></select>
+      <!-- SHARER: choose what to share -->
+      <div id="shareOnly">
+        <label>What are you sharing?</label>
+        <div class="choices">
+          <button class="choice stype active" data-stype="screen">Entire screen</button>
+          <button class="choice stype" data-stype="window">Application</button>
+        </div>
+
+        <div id="windowPick" style="display:none">
+          <label>Application window
+            <button id="refreshWins" class="mini">↻ refresh</button>
+          </label>
+          <select id="windowSel"></select>
+        </div>
+
+        <div id="screenPick">
+          <label>Monitor</label>
+          <select id="displayShare"></select>
+        </div>
       </div>
 
-      <div id="screenPick" style="display:none">
-        <label>Monitor</label>
-        <select id="displayShare"></select>
+      <!-- VIEWER: which monitor they watch on -->
+      <div id="viewOnly" style="display:none">
+        <label>Overlay monitor</label>
+        <select id="displayView"></select>
       </div>
+
+      <button id="connect" class="primary">Launch overlay</button>
+      <p class="status" id="status"></p>
     </div>
 
-    <!-- VIEWER: which monitor they watch on -->
-    <div id="viewOnly" style="display:none">
-      <label>Overlay monitor</label>
-      <select id="displayView"></select>
-    </div>
+    <!-- SETTINGS VIEW -->
+    <div id="settingsView" style="display:none">
+      <p class="settings-hint" id="settingsHint"></p>
 
-    <button id="connect" class="primary">Launch overlay</button>
-    <p class="status" id="status"></p>
+      <label>Your name</label>
+      <input id="username" type="text" placeholder="your name" />
+
+      <label>Sync server</label>
+      <input id="server" type="text" placeholder="wss://…" />
+
+      <label>Screenshot folder</label>
+      <div class="folder-row">
+        <span id="folderPath" class="folder-path"></span>
+        <button id="chooseShotDir" class="mini">Change…</button>
+      </div>
+
+      <button id="settingsDone" class="primary">Done</button>
+    </div>
   </div>
   <script src="control.js"></script>
 </body>

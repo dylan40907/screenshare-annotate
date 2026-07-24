@@ -1,4 +1,4 @@
-/* Screenshare Annotate - brand palette: slate + teal (deliberately not Discord). */
+/* Screenshare Annotate - brand palette: slate + blue (deliberately not Discord). */
 :root {
   --bg: #101318;
   --panel: #1a1e26;
@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+html, body { overflow: hidden; } /* window auto-resizes to fit - no scrollbar */
 body {
   margin: 0;
   font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -19,13 +20,36 @@ body {
   color: var(--text);
   padding: 22px;
 }
+
 .card { max-width: 440px; margin: 0 auto; }
+.header { display: flex; justify-content: space-between; align-items: flex-start; }
+.gear {
+  flex: none;
+  width: 34px; height: 34px;
+  margin-top: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 17px;
+  cursor: pointer;
+}
+.gear:hover { color: var(--text); border-color: #3a414d; }
+
 h1 {
   font-size: 21px;
   margin: 0 0 3px;
   letter-spacing: -0.01em;
 }
-.sub { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+.sub { margin: 0 0 8px; color: var(--muted); font-size: 13px; max-width: 340px; }
+
+.settings-hint { color: var(--accent); font-size: 13px; margin: 4px 0 4px; }
+.folder-row { display: flex; align-items: center; gap: 8px; }
+.folder-path {
+  flex: 1; min-width: 0;
+  font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 label {
   display: block;
@@ -97,4 +121,5 @@ input:focus, select:focus { border-color: var(--accent); }
 }
 .primary:hover { background: var(--accent-hi); }
 
-.status { text-align: center; font-size: 12px; color: #e0a23a; min-height: 16px; margin: 12px 0 0; }
+.status { text-align: center; font-size: 12px; color: #e0a23a; min-height: 0; margin: 8px 0 0; }
+.status:empty { margin: 0; }

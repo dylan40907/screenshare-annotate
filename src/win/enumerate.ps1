@@ -49,7 +49,7 @@ $cb = [WinEnum+EnumProc]{
     $sb = New-Object System.Text.StringBuilder ($len + 1)
     [WinEnum]::GetWindowText($h, $sb, $sb.Capacity) | Out-Null
     $title = $sb.ToString()
-    if ($title -like '*Annotate*') { return $true } # don't list our own windows
+    if ($title -eq 'Screenshare Annotate') { return $true } # skip only our own control window (overlay is title-less)
 
     $r = New-Object WinEnum+RECT
     $hr = [WinEnum]::DwmGetWindowAttribute($h, $DWMWA_EXTENDED_FRAME_BOUNDS, [ref]$r, [Runtime.InteropServices.Marshal]::SizeOf($r))

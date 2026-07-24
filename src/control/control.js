@@ -1,17 +1,13 @@
 const $ = (id) => document.getElementById(id);
 
-// ── Set this to your deployed server before building ──
-// e.g. 'wss://annotate.example.com'  (append '?token=SECRET' if you set JOIN_TOKEN)
-const DEFAULT_SERVER = 'ws://localhost:4321';
-
 let role = 'share';
-let shareType = 'window';
+let shareType = 'screen';
 let windows = [];
+let config = { username: '', serverUrl: '', screenshotDir: '' };
 
-// Restore last-used settings.
-$('server').value = localStorage.getItem('server') || DEFAULT_SERVER;
+// Room persists locally (changes per session); name/server/folder live in the
+// app config (persist across updates, edited in Settings).
 $('room').value = localStorage.getItem('room') || '';
-$('name').value = localStorage.getItem('name') || '';
 
 document.querySelectorAll('.role').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -39,7 +35,48 @@ function updateUI() {
     $('screenPick').style.display = shareType === 'screen' ? 'block' : 'none';
     if (shareType === 'window' && windows.length === 0) loadWindows();
   }
+  fitWindow();
 }
+
+function fitWindow() {
+  requestAnimationFrame(() => window.api.setControlHeight(document.body.scrollHeight + 2));
+}
+
+// ---- settings view ----
+
+function showSettings(firstRun) {
+  $('mainView').style.display = 'none';
+  $('settingsView').style.display = 'block';
+  $('settingsHint').textContent = firstRun ? 'Welcome! Set your name to get started.' : '';
+  $('settingsHint').style.display = firstRun ? 'block' : 'none';
+  $('username').value = config.username || '';
+  $('server').value = config.serverUrl || '';
+  $('folderPath').textContent = config.screenshotDir || '';
+  fitWindow();
+}
+function showMain() {
+  $('settingsView').style.display = 'none';
+  $('mainView').style.display = 'block';
+  updateUI();
+}
+
+$('gear').addEventListener('click', () => showSettings(false));
+
+$('settingsDone').addEventListener('click', () => {
+  const name = $('username').value.trim();
+  if (!name) { $('username').focus(); return; }
+  config.username = name;
+  config.serverUrl = $('server').value.trim() || config.serverUrl;
+  window.api.setConfig({ username: config.username, serverUrl: config.serverUrl });
+  showMain();
+});
+
+$('chooseShotDir').addEventListener('click', async () => {
+  const r = await window.api.chooseScreenshotDir();
+  if (r && r.dir) { config.screenshotDir = r.dir; $('folderPath').textContent = r.dir; fitWindow(); }
+});
+
+// ---- displays / windows ----
 
 async function loadDisplays() {
   const displays = await window.api.getDisplays();
@@ -73,20 +110,15 @@ async function loadWindows() {
 
 $('refreshWins').addEventListener('click', (e) => { e.preventDefault(); loadWindows(); });
 
+// ---- launch ----
+
 $('connect').addEventListener('click', () => {
-  const server = $('server').value.trim();
   const room = $('room').value.trim();
-  const name = $('name').value.trim();
-  if (!server || !room || !name) {
-    $('status').textContent = 'Server, room, and name are all required.';
-    return;
-  }
-  localStorage.setItem('server', server);
+  if (!config.username) { showSettings(true); return; }
+  if (!room) { $('status').textContent = 'Enter a room name.'; return; }
   localStorage.setItem('room', room);
-  localStorage.setItem('name', name);
 
-  const cfg = { serverUrl: server, room, name, role };
-
+  const cfg = { serverUrl: config.serverUrl, room, name: config.username, role };
   if (role === 'share' && shareType === 'window') {
     const idx = Number($('windowSel').value);
     const win = windows[idx];
@@ -100,9 +132,14 @@ $('connect').addEventListener('click', () => {
   } else {
     cfg.displayId = Number($('displayView').value);
   }
-
   window.api.connect(cfg);
 });
 
-updateUI();
-loadDisplays();
+// ---- boot ----
+
+(async function init() {
+  config = await window.api.getConfig();
+  await loadDisplays();
+  if (!config.username) showSettings(true); // first launch: ask for a name
+  else showMain();
+})();

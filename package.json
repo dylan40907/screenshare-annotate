@@ -1,8 +1,8 @@
 {
   "name": "screenshare-annotate",
   "productName": "Screenshare Annotate",
-  "version": "0.1.0",
-  "description": "Collaborative annotation overlay for any shared screen or window",
+  "version": "0.1.13",
+  "description": "Screenshare Annotate",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -11,7 +11,8 @@
     "server": "node server/server.js",
     "icon": "node scripts/make-icon.js",
     "dist": "electron-builder --win",
-    "dist:dir": "electron-builder --win --dir"
+    "dist:dir": "electron-builder --win --dir",
+    "publish": "electron-builder --publish always"
   },
   "author": "Dylan Huang",
   "license": "MIT",
@@ -44,6 +45,9 @@
     ],
     "asarUnpack": [
       "src/win/**"
+    ],
+    "protocols": [
+      { "name": "Screenshare Annotate", "schemes": ["screenshare-annotate"] }
     ],
     "win": {
       "target": ["nsis"],

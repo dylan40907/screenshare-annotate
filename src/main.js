@@ -7,8 +7,9 @@
 // The overlay is a "dumb" renderer: it draws shapes and emits local draw events.
 // Main is the pipe between the overlay and the sync server.
 
-const { app, BrowserWindow, ipcMain, screen, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, dialog, desktopCapturer, nativeImage, shell, clipboard } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const WebSocket = require('ws');
 const { autoUpdater } = require('electron-updater');
@@ -32,11 +33,28 @@ if (profile) {
 }
 
 let controlWin = null;
+let controlContentWidth = null; // locked so repeated auto-fits can't drift the width
 let overlayWin = null;
 let ws = null;
 let cfg = null; // last connect config
 let tracker = null; // child process streaming the shared window's bounds
 let lastPhysRegion = null; // most recent physical window rect (for re-push on ready)
+
+// ---- persisted settings (e.g. custom screenshot folder) ----
+let appConfig = {};
+function configFile() { return path.join(app.getPath('userData'), 'config.json'); }
+function loadConfig() { try { appConfig = JSON.parse(fs.readFileSync(configFile(), 'utf8')); } catch { appConfig = {}; } }
+function saveConfig() {
+  try {
+    fs.mkdirSync(path.dirname(configFile()), { recursive: true });
+    fs.writeFileSync(configFile(), JSON.stringify(appConfig));
+  } catch {}
+}
+const DEFAULT_SERVER = 'ws://localhost:4321';
+function screenshotDir() {
+  return appConfig.screenshotDir || path.join(app.getPath('pictures'), 'Screenshare Annotate');
+}
+function serverUrl() { return appConfig.serverUrl || DEFAULT_SERVER; }
 
 function createControl() {
   controlWin = new BrowserWindow({
@@ -49,6 +67,7 @@ function createControl() {
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   controlWin.loadFile(path.join(__dirname, 'control', 'control.html'));
+  controlContentWidth = null; // re-measure once for this window
   controlWin.on('closed', () => { controlWin = null; });
 }
 
@@ -72,14 +91,39 @@ function createOverlay(display, search) {
     hasShadow: false,
     backgroundColor: '#00000000',
     icon: ICON,
+    // Non-activating (WS_EX_NOACTIVATE): the overlay receives mouse input for
+    // drawing/aligning but never steals foreground focus - so the app underneath
+    // (Discord) stays focused and doesn't pause its stream preview.
+    focusable: false,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   });
   // "screen-saver" level keeps it above most things incl. fullscreen apps.
   overlayWin.setAlwaysOnTop(true, 'screen-saver');
   overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWin.setIgnoreMouseEvents(true, { forward: true }); // start click-through
+
+  // Windows multi-monitor DPI fix: at construction Electron sizes the window
+  // using the PRIMARY display's scale factor, so on a secondary monitor with a
+  // different DPI the overlay ends up smaller/larger than the screen (dead
+  // strips you can't draw on). Re-applying the bounds once the window is parented
+  // to the target monitor forces the correct per-monitor conversion.
+  const coverDisplay = () => {
+    if (overlayWin && !overlayWin.isDestroyed()) overlayWin.setBounds(b);
+  };
+  coverDisplay();
+  overlayWin.once('ready-to-show', coverDisplay);
+  overlayWin.webContents.once('did-finish-load', coverDisplay);
+
   overlayWin.loadFile(path.join(__dirname, 'overlay', 'overlay.html'), { search });
-  overlayWin.on('closed', () => { overlayWin = null; stopTracker(); });
+  // Guard against a replaced session: when we switch sessions we close the old
+  // overlay and immediately open a new one. The OLD window's 'closed' fires
+  // afterwards, so only clear the reference if it still points at THIS window
+  // (otherwise it would null out the new overlay and leave it uncontrollable).
+  const thisWin = overlayWin;
+  overlayWin.on('closed', () => {
+    if (overlayWin === thisWin) overlayWin = null;
+    stopTracker();
+  });
 }
 
 function runPowerShell(scriptFile, args = []) {
@@ -164,6 +208,74 @@ ipcMain.handle('get-displays', () => {
 });
 
 // List selectable application windows (physical-pixel bounds).
+// Capture a region of the overlay's display (which shows the shared content +
+// our annotations) and save it as a PNG in Pictures/Screenshare Annotate.
+// `region` is in DIP relative to the overlay window (= its display's top-left).
+ipcMain.handle('capture-screenshot', async (_e, region) => {
+  try {
+    if (!overlayWin || overlayWin.isDestroyed()) return { error: 'no overlay' };
+    const display = screen.getDisplayMatching(overlayWin.getBounds());
+    const sf = display.scaleFactor || 1;
+    const full = {
+      width: Math.round(display.size.width * sf),
+      height: Math.round(display.size.height * sf),
+    };
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: full });
+    const src = sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
+    if (!src) return { error: 'no screen source' };
+
+    let img = src.thumbnail; // NativeImage at physical resolution of the display
+    const crop = {
+      x: Math.max(0, Math.round(region.x * sf)),
+      y: Math.max(0, Math.round(region.y * sf)),
+      width: Math.round(region.w * sf),
+      height: Math.round(region.h * sf),
+    };
+    if (crop.width > 0 && crop.height > 0) img = img.crop(crop);
+    if (img.isEmpty()) return { error: 'empty capture' };
+    const png = img.toPNG();
+    if (!png || png.length === 0) return { error: 'encode failed' };
+
+    const dir = screenshotDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').replace(/\..+/, '');
+    const file = path.join(dir, `screenshare-annotate-${ts}.png`);
+    // Write to a temp file then rename - an atomic swap, so Explorer / OneDrive /
+    // antivirus never see a half-written file (a real cause of "no thumbnail").
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, png);
+    fs.renameSync(tmp, file);
+    return { path: file, dir };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+});
+
+ipcMain.on('open-path', (_e, p) => { if (p) shell.showItemInFolder(p); });
+
+ipcMain.handle('get-screenshot-dir', () => ({ dir: screenshotDir() }));
+ipcMain.handle('choose-screenshot-dir', async () => {
+  const parent = controlWin && !controlWin.isDestroyed() ? controlWin : null;
+  const res = await dialog.showOpenDialog(parent, {
+    title: 'Choose screenshot folder',
+    defaultPath: screenshotDir(),
+    properties: ['openDirectory', 'createDirectory'],
+  });
+  if (res.canceled || !res.filePaths || !res.filePaths[0]) return { dir: screenshotDir() };
+  appConfig.screenshotDir = res.filePaths[0];
+  saveConfig();
+  return { dir: appConfig.screenshotDir };
+});
+
+ipcMain.on('set-control-height', (_e, h) => {
+  if (controlWin && !controlWin.isDestroyed()) {
+    // Measure the width ONCE and reuse it - reading getContentSize each time and
+    // writing it back drifts wider by a sub-pixel per call on high-DPI displays.
+    if (controlContentWidth == null) controlContentWidth = controlWin.getContentSize()[0];
+    controlWin.setContentSize(controlContentWidth, Math.max(200, Math.round(h)));
+  }
+});
+
 ipcMain.handle('get-windows', () => new Promise((resolve) => {
   const ps = runPowerShell('enumerate.ps1');
   let out = '';
@@ -175,28 +287,61 @@ ipcMain.handle('get-windows', () => new Promise((resolve) => {
   ps.on('error', () => resolve([]));
 }));
 
-ipcMain.on('connect', (_e, config) => {
+function startSession(config) {
   cfg = config;
   stopTracker();          // ensure no old tracker survives
   lastPhysRegion = null;  // and no stale window bounds leak into a new session
-  if (controlWin) controlWin.hide();
+  if (controlWin && !controlWin.isDestroyed()) controlWin.hide();
+  if (overlayWin && !overlayWin.isDestroyed()) overlayWin.close(); // replace any prior session
 
-  const nameParam = `name=${encodeURIComponent(config.name)}`;
+  const common = `name=${encodeURIComponent(config.name || '')}` +
+    `&room=${encodeURIComponent(config.room || '')}` +
+    `&server=${encodeURIComponent(config.serverUrl || serverUrl())}`;
+
   if (config.role === 'share' && config.shareType === 'window') {
     // Overlay is placed on whichever display the window is currently on; the
     // tracker keeps the region glued to the window as it moves/resizes.
     const win = config.window;
     const dip = screen.screenToDipRect(null, { x: win.x, y: win.y, width: win.w, height: win.h });
     const display = screen.getDisplayMatching(dip);
-    createOverlay(display, `role=share&shareType=window&${nameParam}`);
+    createOverlay(display, `role=share&shareType=window&${common}`);
     startTracker(win.handle);
   } else {
     const display = findDisplay(config.displayId);
     const shareType = config.role === 'share' ? 'screen' : 'view';
-    createOverlay(display, `role=${config.role}&shareType=${shareType}&inset=${config.inset || 0}&${nameParam}`);
+    createOverlay(display, `role=${config.role}&shareType=${shareType}&inset=${config.inset || 0}&${common}`);
   }
   // ws connect happens once the overlay signals it is ready (see 'overlay-ready').
+}
+ipcMain.on('connect', (_e, config) => startSession(config));
+
+ipcMain.handle('get-config', () => ({
+  username: appConfig.username || '',
+  serverUrl: serverUrl(),
+  screenshotDir: screenshotDir(),
+}));
+ipcMain.on('set-config', (_e, partial) => {
+  if (!partial || typeof partial !== 'object') return;
+  if ('username' in partial) appConfig.username = partial.username;
+  if ('serverUrl' in partial) appConfig.serverUrl = partial.serverUrl;
+  saveConfig();
 });
+
+ipcMain.on('copy-text', (_e, text) => { if (text) clipboard.writeText(String(text)); });
+
+// screenshare-annotate://join?room=NAME  -> join that room as a viewer, default monitor.
+function handleDeepLink(url) {
+  let room = null;
+  try { room = new URL(url).searchParams.get('room'); } catch {}
+  if (!room) return;
+  startSession({
+    serverUrl: serverUrl(),
+    room,
+    name: appConfig.username || 'anon',
+    role: 'view',
+    displayId: screen.getPrimaryDisplay().id,
+  });
+}
 
 ipcMain.on('overlay-ready', () => {
   connectWS();
@@ -223,7 +368,22 @@ ipcMain.on('ws-send', (_e, obj) => {
 ipcMain.on('set-ignore-mouse', (_e, ignore) => {
   if (overlayWin && !overlayWin.isDestroyed()) {
     overlayWin.setIgnoreMouseEvents(ignore, { forward: true });
+    // Capturing the mouse drops WS_EX_TRANSPARENT, which makes Chromium (Discord)
+    // treat the overlay as occluding and pause the stream preview. Sub-1.0 opacity
+    // makes the window "not fully opaque," which Chromium's occlusion tracker
+    // skips - keeping Discord's preview live while drawing. (Verified fix.)
+    overlayWin.setOpacity(ignore ? 1 : 0.99);
   }
+});
+
+// The overlay is normally non-focusable (so it never steals Discord's focus).
+// The text tool needs the keyboard, so we briefly re-enable focus while typing,
+// then drop it again - releasing focus back toward whatever was underneath.
+ipcMain.on('set-focusable', (_e, focusable) => {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+  overlayWin.setFocusable(focusable);
+  if (focusable) overlayWin.focus();
+  else overlayWin.blur();
 });
 
 // ---- auto-update (packaged builds only) ----
@@ -244,10 +404,37 @@ function setupAutoUpdate() {
   autoUpdater.checkForUpdates().catch(() => {});
 }
 
+// ---- deep links (screenshare-annotate://) + single instance ----
+
+const PROTOCOL = 'screenshare-annotate';
+if (process.defaultApp && process.argv.length >= 2) {
+  app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [path.resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient(PROTOCOL);
+}
+
+// One instance per user-data dir (profiles keep dev share+view separate). A
+// second launch (e.g. clicking a join link) routes its URL to the running one.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+
+app.on('second-instance', (_e, argv) => {
+  const url = argv.find((a) => a.startsWith(`${PROTOCOL}://`));
+  if (url) { handleDeepLink(url); return; }
+  if (controlWin && !controlWin.isDestroyed()) {
+    if (controlWin.isMinimized()) controlWin.restore();
+    controlWin.show(); controlWin.focus();
+  }
+});
+
 // ---- lifecycle ----
 
 app.whenReady().then(() => {
-  createControl();
+  if (!gotLock) return;
+  loadConfig();
+  const launchUrl = process.argv.find((a) => a.startsWith(`${PROTOCOL}://`));
+  if (launchUrl) handleDeepLink(launchUrl); // launched by clicking a join link
+  else createControl();
   if (app.isPackaged) setupAutoUpdate();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createControl();

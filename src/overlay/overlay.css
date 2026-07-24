@@ -94,11 +94,36 @@ html, body {
   width: 26px !important;
   height: 26px !important;
   min-width: 26px !important;
+  padding: 0 !important; /* reclaim content width so the largest dot stays round */
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.wbtn .dotw { background: currentColor; border-radius: 50%; }
+.wbtn .dotw { background: currentColor; border-radius: 50%; flex: none; }
+
+/* the 📷 emoji sits a touch low - nudge it up to visually center it */
+#toolbar #screenshot { position: relative; top: -2px; }
+
+.toast {
+  position: absolute;
+  /* left/top set in JS to the center of the shared region */
+  transform: translate(-50%, -50%);
+  background: rgba(20, 21, 24, 0.95);
+  color: #fff;
+  padding: 12px 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  max-width: 70vw;
+  text-align: center;
+  word-break: break-word;
+}
+.toast.show { opacity: 1; }
 
 .dot {
   width: 9px;
@@ -110,6 +135,39 @@ html, body {
 }
 .dot.on { background: #23a55a; }
 .dot.off { background: #f23f43; }
+
+/* Same container look as #toolbar (height, radius, background) - just shorter. */
+#miniBar {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none; /* set to flex when shown */
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(30, 31, 34, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+#miniBar button {
+  height: 30px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: #dbdee1;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1;
+}
+#miniBar button:hover { background: rgba(255, 255, 255, 0.08); }
 
 .text-input {
   position: absolute;

@@ -13,7 +13,16 @@
 const params = new URLSearchParams(location.search);
 const ROLE = params.get('role'); // 'share' | 'view'
 const MY_NAME = decodeURIComponent(params.get('name') || 'anon');
+const ROOM = decodeURIComponent(params.get('room') || '');
+const SERVER = decodeURIComponent(params.get('server') || '');
 const SHARE_TYPE = params.get('shareType'); // 'window' | 'screen' | 'view'
+
+// https link that redirects (via the sync server) to the screenshare-annotate://
+// deep link, so anyone can click it to join this room as a viewer.
+function viewLink() {
+  const base = SERVER.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:').split('?')[0].replace(/\/+$/, '');
+  return base + '/j/' + encodeURIComponent(ROOM);
+}
 const INSET = parseInt(params.get('inset') || '0', 10);
 // Window share: the region is auto-tracked from the real window bounds (fed by
 // the main process), drawing is locked to it, and there's no calibration.
@@ -39,6 +48,8 @@ const labels = new Map();         // userId -> { name, n:{x,y}, t } transient na
 
 let aspect = 16 / 9;              // shared region aspect (w/h), from sharer
 let canvasInfo = null;            // {width,height} announced by sharer
+let sharerShareType = null;       // 'screen' | 'window' - how the sharer is sharing
+let viewerBoxSeeded = false;      // has the detected aspect been applied to the viewer's box yet?
 // The shared region as a rectangle in this client's css px. It IS the mapRect.
 //   • Sharer: the area being shared - a whole monitor, or a window they drag to
 //     cover in Align mode (free-form; the sharer defines the true aspect ratio).
@@ -48,6 +59,7 @@ let mapRect = null;               // active mapping rect for this client (= regi
 
 let current = null;               // local in-progress shape
 let drag = null;                  // active pointer interaction
+let capturing = false;            // true while taking a screenshot (hide UI chrome)
 
 const PALETTE = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#0a84ff', '#af52de', '#ffffff', '#000000'];
 const WIDTHS = [2, 4, 8, 16];
@@ -69,19 +81,20 @@ function resize() {
   canvas.style.height = H + 'px';
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   recomputeMapRect();
+  // If the window size was corrected (multi-monitor DPI), re-announce so viewers
+  // get the right aspect ratio.
+  if (ROLE === 'share' && !AUTO_REGION) announceCanvasDebounced();
 }
 window.addEventListener('resize', resize);
 
 function recomputeMapRect() {
-  if (!regionRect) {
-    if (AUTO_REGION) {
-      // Wait for the tracker's first region-update; nothing to draw until then.
-    } else if (ROLE === 'share') {
-      // Screen share: region = whole monitor (inset by the starting margin).
-      regionRect = { x: INSET, y: INSET, w: W - 2 * INSET, h: H - 2 * INSET };
-    } else {
-      initRegionViewer();
-    }
+  if (ROLE === 'share' && !AUTO_REGION) {
+    // Screen share: region = the whole window. Recompute on every resize so a
+    // late window-size correction (multi-monitor DPI fix) is picked up.
+    regionRect = { x: INSET, y: INSET, w: W - 2 * INSET, h: H - 2 * INSET };
+  } else if (!regionRect) {
+    if (!AUTO_REGION) initRegionViewer(); // viewer
+    // AUTO_REGION (window share): wait for the tracker's first region-update
   }
   mapRect = regionRect;
 }
@@ -128,8 +141,9 @@ window.api.onConn((d) => {
 
 function announceCanvas() {
   if (!mapRect) return; // window share: not tracked yet
-  // Sharer defines the canvas dimensions (drives viewers' aspect lock).
-  send({ type: 'canvas-info', width: Math.round(mapRect.w), height: Math.round(mapRect.h) });
+  // Sharer defines the canvas dimensions (drives viewers' aspect lock) and tells
+  // viewers how it's sharing (screen = annotations are baked into the stream).
+  send({ type: 'canvas-info', width: Math.round(mapRect.w), height: Math.round(mapRect.h), shareType: SHARE_TYPE });
 }
 
 window.api.onWsMessage((raw) => {
@@ -138,6 +152,7 @@ window.api.onWsMessage((raw) => {
     case 'welcome':
       myUserId = m.userId;
       if (m.canvas) applyCanvasInfo(m.canvas);
+      sharerShareType = m.shareType || null;
       shapes.clear();
       m.shapes.forEach((s) => shapes.set(s.id, s));
       calibrationOn = m.calibration;
@@ -145,6 +160,7 @@ window.api.onWsMessage((raw) => {
       break;
     case 'canvas-info':
       applyCanvasInfo({ width: m.width, height: m.height });
+      if (m.shareType) sharerShareType = m.shareType;
       break;
     case 'draw':
       shapes.set(m.shape.id, m.shape);
@@ -172,16 +188,21 @@ window.api.onWsMessage((raw) => {
 
 function applyCanvasInfo(c) {
   canvasInfo = c;
-  aspect = c.width / c.height;
+  aspect = c.width / c.height; // kept for the initial box + Shift-constrained resize
   if (ROLE === 'view') {
-    // Re-lock the alignment rect's aspect around its current center.
-    if (!regionRect) initRegionViewer();
-    else {
+    if (!regionRect) {
+      initRegionViewer(); // built with the real aspect
+      viewerBoxSeeded = true;
+    } else if (!viewerBoxSeeded) {
+      // The box was created at boot with a placeholder aspect (before canvas-info
+      // arrived). Reshape it ONCE now that we know the real dimensions - but never
+      // again, so a later canvas-info can't clobber a box the user has stretched.
       const cx = regionRect.x + regionRect.w / 2;
       const cy = regionRect.y + regionRect.h / 2;
       regionRect.h = regionRect.w / aspect;
       regionRect.x = cx - regionRect.w / 2;
       regionRect.y = cy - regionRect.h / 2;
+      viewerBoxSeeded = true;
     }
     mapRect = regionRect;
   }
@@ -197,17 +218,28 @@ function draw() {
     return;
   }
 
-  // All committed + live shapes.
-  for (const s of shapes.values()) drawShape(s);
-  for (const s of liveShapes.values()) drawShape(s);
+  // In a full-SCREEN share, the sharer's annotations are baked into the Discord
+  // stream the viewer is already watching. So a viewer renders only its OWN
+  // strokes locally (for zero-latency feedback) and lets everyone else's come
+  // through the stream - avoiding the doubled/ghosted lines on misalignment.
+  const suppress = ROLE === 'view' && sharerShareType === 'screen';
+
+  for (const s of shapes.values()) {
+    if (suppress && s.userId !== myUserId) continue;
+    drawShape(s);
+  }
+  if (!suppress) for (const s of liveShapes.values()) drawShape(s); // peers' live strokes come via the stream
   if (current) drawShape(current);
 
-  // Region UI: grab-handles while editing (either role); the sharer's plain
-  // calibration brackets otherwise (if enabled).
-  if (mode === 'align') drawBrackets(regionRect, '#00e5ff', true);
-  else if (ROLE === 'share' && calibrationOn) drawBrackets(regionRect, '#00e5ff', false);
-
-  drawLabels();
+  // Skip all UI chrome (brackets, align box, name tags) while capturing so only
+  // the annotations + underlying content end up in the screenshot.
+  if (!capturing) {
+    // Region UI: viewer's align box (brand blue, to contrast the sharer's cyan
+    // calibration brackets); the sharer's cyan calibration brackets.
+    if (mode === 'align') drawBrackets(regionRect, '#5170ff', true);
+    else if (ROLE === 'share' && calibrationOn) drawBrackets(regionRect, '#00e5ff', false);
+    if (!suppress) drawLabels(); // peers' name tags also come via the stream
+  }
   requestAnimationFrame(draw);
 }
 
@@ -330,38 +362,58 @@ function drawShape(s) {
   ctx.restore();
 }
 
+// withFill=true  -> viewer's align handles (slim, with grab dots)
+// withFill=false -> sharer's calibration brackets (bold + haloed, so they read
+//                  clearly through Discord's downscaled screenshare)
 function drawBrackets(rect, col, withFill) {
-  const len = Math.min(48, rect.w * 0.08, rect.h * 0.08);
   const corners = [
     { x: rect.x, y: rect.y, dx: 1, dy: 1 },
     { x: rect.x + rect.w, y: rect.y, dx: -1, dy: 1 },
     { x: rect.x + rect.w, y: rect.y + rect.h, dx: -1, dy: -1 },
     { x: rect.x, y: rect.y + rect.h, dx: 1, dy: -1 },
   ];
-  ctx.save();
-  // faint full outline for the whole rect
-  ctx.strokeStyle = 'rgba(0,229,255,0.35)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([6, 6]);
-  ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
-  ctx.setLineDash([]);
-
-  ctx.strokeStyle = col;
-  ctx.fillStyle = col;
-  ctx.lineWidth = 4;
-  ctx.lineCap = 'square';
-  for (const c of corners) {
+  const drawL = (c, len) => {
     ctx.beginPath();
     ctx.moveTo(c.x + c.dx * len, c.y);
     ctx.lineTo(c.x, c.y);
     ctx.lineTo(c.x, c.y + c.dy * len);
     ctx.stroke();
-    if (withFill) { // viewer grab handle
+  };
+  ctx.save();
+
+  if (withFill) {
+    // Viewer align - original slim style, brand-blue to contrast the cyan brackets.
+    ctx.strokeStyle = 'rgba(81,112,255,0.4)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 6]);
+    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.setLineDash([]);
+
+    const len = Math.min(48, rect.w * 0.08, rect.h * 0.08);
+    ctx.strokeStyle = col; ctx.fillStyle = col;
+    ctx.lineWidth = 4; ctx.lineCap = 'square';
+    for (const c of corners) {
+      drawL(c, len);
       ctx.globalAlpha = 0.9;
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, 6, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(c.x, c.y, 6, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
+    }
+  } else {
+    // Sharer calibration - bold + scaled + dark halo for stream visibility.
+    const minDim = Math.min(rect.w, rect.h);
+    const len = Math.max(56, minDim * 0.12);
+    const lw = Math.max(18, minDim * 0.018);
+
+    ctx.strokeStyle = 'rgba(0,229,255,0.4)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 8]);
+    ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+    ctx.setLineDash([]);
+
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    for (const c of corners) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = lw + 6; drawL(c, len);
+      ctx.strokeStyle = col; ctx.lineWidth = lw; drawL(c, len);
     }
   }
   ctx.restore();
@@ -388,13 +440,14 @@ function insideRect(p, r) {
 }
 
 document.addEventListener('pointerdown', (e) => {
-  if (e.target.closest('#toolbar') || e.target.id === 'textInput') return;
+  if (e.target.closest('#toolbar, #miniBar') || e.target.id === 'textInput') return;
   const p = evPt(e);
 
   if (mode === 'align') { // both roles can edit their region
     const corner = cornerHit(p);
     if (corner) { drag = { kind: 'resize', corner, start: p, orig: { ...regionRect } }; }
     else if (insideRect(p, regionRect)) { drag = { kind: 'move', start: p, orig: { ...regionRect } }; }
+    if (drag) viewerBoxSeeded = true; // user took control - don't auto-reshape later
     return;
   }
 
@@ -410,7 +463,7 @@ document.addEventListener('pointermove', (e) => {
     regionRect.x = drag.orig.x + (p.x - drag.start.x);
     regionRect.y = drag.orig.y + (p.y - drag.start.y);
   } else if (drag.kind === 'resize') {
-    resizeAlign(drag, p);
+    resizeAlign(drag, p, e.shiftKey);
   } else if (drag.kind === 'draw') {
     updateDraw(p);
   }
@@ -423,7 +476,10 @@ document.addEventListener('pointerup', () => {
   drag = null;
 });
 
-function resizeAlign(d, p) {
+// Corners resize freely by default (Discord's encoder can shift the streamed
+// aspect slightly, so users need to stretch to fit). Holding Shift constrains
+// to the sharer's detected aspect ratio, released the moment Shift is let go.
+function resizeAlign(d, p, shift) {
   const o = d.orig;
   const anchor = {
     nw: { x: o.x + o.w, y: o.y + o.h },
@@ -432,17 +488,18 @@ function resizeAlign(d, p) {
     sw: { x: o.x + o.w, y: o.y },
   }[d.corner];
 
-  if (ROLE === 'view') {
-    // Aspect-locked scaling from the opposite corner (viewer must match aspect).
-    let w = Math.max(40, Math.abs(p.x - anchor.x));
-    let h = w / aspect;
+  if (shift) {
+    // Aspect-locked scaling from the opposite corner.
+    const w = Math.max(40, Math.abs(p.x - anchor.x));
+    const h = w / aspect;
     const left = (d.corner === 'nw' || d.corner === 'sw');
     const top = (d.corner === 'nw' || d.corner === 'ne');
     regionRect.w = w; regionRect.h = h;
     regionRect.x = left ? anchor.x - w : anchor.x;
     regionRect.y = top ? anchor.y - h : anchor.y;
   } else {
-    // Free-form for the sharer - they define the true aspect ratio.
+    // Free-form stretch - annotations map through normalized coords, so they
+    // squash/stretch with the box and stay correct relative to the content.
     regionRect.x = Math.min(anchor.x, p.x);
     regionRect.y = Math.min(anchor.y, p.y);
     regionRect.w = Math.max(40, Math.abs(p.x - anchor.x));
@@ -535,7 +592,24 @@ function samplePoints(s) {
   return pts;
 }
 
+// Rendered pixel bounds of a text shape (matches drawShape's font).
+function textBoundsPx(s) {
+  const p = n2p({ x: s.x, y: s.y });
+  const fontPx = Math.max(10, (s.size / 1000) * mapRect.w);
+  ctx.save();
+  ctx.font = `${fontPx}px -apple-system, "Segoe UI", sans-serif`;
+  const w = ctx.measureText(s.text).width;
+  ctx.restore();
+  return { x: p.x, y: p.y, w, h: fontPx };
+}
+
 function hitShape(s, p, tol) {
+  if (s.kind === 'text') {
+    // Erase when the cursor touches anywhere in the text's box, not just its origin.
+    const b = textBoundsPx(s);
+    return p.x >= b.x - tol && p.x <= b.x + b.w + tol &&
+           p.y >= b.y - tol && p.y <= b.y + b.h + tol;
+  }
   return samplePoints(s).some((q) => Math.hypot(q.x - p.x, q.y - p.y) <= tol);
 }
 
@@ -543,6 +617,10 @@ function hitShape(s, p, tol) {
 
 const textInput = document.getElementById('textInput');
 function placeText(p, n) {
+  // The overlay is non-focusable; the text box needs the keyboard, so briefly
+  // allow focus while typing, then release it (Discord may pause only during
+  // this short text entry).
+  window.api.setFocusable(true);
   textInput.style.display = 'block';
   textInput.style.left = p.x + 'px';
   textInput.style.top = p.y + 'px';
@@ -551,6 +629,7 @@ function placeText(p, n) {
   textInput.value = '';
   setTimeout(() => textInput.focus(), 0);
 
+  const release = () => window.api.setFocusable(false);
   const commit = () => {
     const val = textInput.value.trim();
     textInput.style.display = 'none';
@@ -561,11 +640,12 @@ function placeText(p, n) {
       send({ type: 'draw', shape: s });
       redoStack.length = 0;
     }
+    release();
   };
   textInput.onblur = commit;
   textInput.onkeydown = (ev) => {
     if (ev.key === 'Enter') { ev.preventDefault(); commit(); }
-    else if (ev.key === 'Escape') { textInput.style.display = 'none'; textInput.onblur = null; }
+    else if (ev.key === 'Escape') { textInput.style.display = 'none'; textInput.onblur = null; release(); }
   };
 }
 
@@ -576,7 +656,7 @@ function placeText(p, n) {
 //   • we're in a working mode (draw / align) - the whole surface is live.
 let lastIgnore = null;
 function updateInteractivity(e) {
-  const overToolbar = !!(e.target && e.target.closest && e.target.closest('#toolbar'));
+  const overToolbar = !!(e.target && e.target.closest && e.target.closest('#toolbar, #miniBar'));
   const interactive = mode !== 'idle' || overToolbar;
   const ignore = !interactive;
   if (ignore !== lastIgnore) {
@@ -631,9 +711,23 @@ function setMode(m) {
 
 function updateBanner() {
   let msg = '';
-  if (mode === 'align') msg = 'ALIGN - drag the rectangle over the shared screen; corners scale it (aspect locked). Nest the corners into the sharer\'s cyan brackets.';
+  if (mode === 'align') msg = 'ALIGN - drag the box over the shared screen; drag corners to stretch it freely. Hold SHIFT while dragging a corner to keep the original aspect ratio.';
   else if (mode === 'draw') msg = `DRAW - ${tool}. Switch to Idle to click through again.`;
   showBanner(msg, false);
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  // Center it on the shared region: mid-screen for full-screen, mid-align-box
+  // for a viewer, mid-window for a window share.
+  const r = regionRect || { x: 0, y: 0, w: W, h: H };
+  el.style.left = (r.x + r.w / 2) + 'px';
+  el.style.top = (r.y + r.h / 2) + 'px';
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200); // fades via CSS transition
 }
 
 let bannerTimer = null;
@@ -686,9 +780,59 @@ document.getElementById('redo').addEventListener('click', doRedo);
 document.getElementById('clear').addEventListener('click', () => {
   send({ type: 'clear' });
 });
+
+// Screenshot: hide our UI chrome, let the screen recomposite, then capture the
+// shared region (full screen / window / viewer's align box) with annotations.
+async function takeScreenshot() {
+  if (capturing) return;
+  capturing = true;
+  toolbar.style.visibility = 'hidden';
+  miniBar.style.visibility = 'hidden';
+  await new Promise((r) => setTimeout(r, 160)); // let the compositor drop the chrome
+  const r = regionRect || { x: 0, y: 0, w: W, h: H };
+  const res = await window.api.captureScreenshot({ x: r.x, y: r.y, w: r.w, h: r.h });
+  capturing = false;
+  toolbar.style.visibility = '';
+  miniBar.style.visibility = '';
+  showToast(res && res.path
+    ? '✓ Screenshot saved to ' + (res.dir || 'your screenshots folder')
+    : 'Screenshot failed' + (res && res.error ? ` (${res.error})` : ''));
+}
+document.getElementById('screenshot').addEventListener('click', takeScreenshot);
+document.getElementById('copylink').addEventListener('click', () => {
+  if (!ROOM || !SERVER) { showToast('No room link available'); return; }
+  window.api.copyText(viewLink());
+  showToast('✓ View link copied to clipboard');
+});
 document.getElementById('disconnect').addEventListener('click', () => {
   window.api.disconnect();
 });
+
+// Minimize the toolbar to a small pill (drops to Idle so the screen is usable),
+// and expand it again. The pill appears where the toolbar was, and vice versa.
+const miniBar = document.getElementById('miniBar');
+function setMinimized(min) {
+  if (min) {
+    const rc = toolbar.getBoundingClientRect();
+    miniBar.style.left = rc.left + 'px';
+    miniBar.style.top = rc.top + 'px';
+    miniBar.style.transform = 'none';
+    toolbar.style.display = 'none';
+    miniBar.style.display = 'flex';
+    setMode('idle');
+  } else {
+    const rc = miniBar.getBoundingClientRect();
+    toolbar.style.left = rc.left + 'px';
+    toolbar.style.top = rc.top + 'px';
+    toolbar.style.transform = 'none';
+    miniBar.style.display = 'none';
+    toolbar.style.display = 'flex';
+  }
+  lastIgnore = null; // re-evaluate click-through on next move
+}
+document.getElementById('minimize').addEventListener('click', () => setMinimized(true));
+document.getElementById('expand').addEventListener('click', () => setMinimized(false));
+document.getElementById('miniDisconnect').addEventListener('click', () => window.api.disconnect());
 
 // Show/hide role- and mode-specific controls.
 //   • Align is viewer-only (sharer's region is either the whole screen or the
@@ -720,30 +864,36 @@ const toolbar = document.getElementById('toolbar');
   }
 })();
 
-const grip = document.getElementById('grip');
-grip.addEventListener('pointerdown', (e) => {
-  e.preventDefault();
-  grip.setPointerCapture(e.pointerId);
-  const rect = toolbar.getBoundingClientRect();
-  const offX = e.clientX - rect.left;
-  const offY = e.clientY - rect.top;
-  const move = (ev) => {
-    const left = Math.max(0, Math.min(window.innerWidth - 40, ev.clientX - offX));
-    const top = Math.max(0, Math.min(window.innerHeight - 20, ev.clientY - offY));
-    toolbar.style.left = left + 'px';
-    toolbar.style.top = top + 'px';
-    toolbar.style.transform = 'none';
-  };
-  const up = (ev) => {
-    grip.releasePointerCapture(e.pointerId);
-    grip.removeEventListener('pointermove', move);
-    grip.removeEventListener('pointerup', up);
-    const rc = toolbar.getBoundingClientRect();
-    localStorage.setItem('toolbarPos', JSON.stringify({ left: rc.left, top: rc.top }));
-  };
-  grip.addEventListener('pointermove', move);
-  grip.addEventListener('pointerup', up);
+function makeDraggable(gripEl, targetEl, onEnd) {
+  gripEl.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    gripEl.setPointerCapture(e.pointerId);
+    const rect = targetEl.getBoundingClientRect();
+    const offX = e.clientX - rect.left;
+    const offY = e.clientY - rect.top;
+    const move = (ev) => {
+      const left = Math.max(0, Math.min(window.innerWidth - 40, ev.clientX - offX));
+      const top = Math.max(0, Math.min(window.innerHeight - 20, ev.clientY - offY));
+      targetEl.style.left = left + 'px';
+      targetEl.style.top = top + 'px';
+      targetEl.style.transform = 'none';
+    };
+    const up = () => {
+      gripEl.releasePointerCapture(e.pointerId);
+      gripEl.removeEventListener('pointermove', move);
+      gripEl.removeEventListener('pointerup', up);
+      if (onEnd) onEnd();
+    };
+    gripEl.addEventListener('pointermove', move);
+    gripEl.addEventListener('pointerup', up);
+  });
+}
+
+makeDraggable(document.getElementById('grip'), toolbar, () => {
+  const rc = toolbar.getBoundingClientRect();
+  localStorage.setItem('toolbarPos', JSON.stringify({ left: rc.left, top: rc.top }));
 });
+makeDraggable(document.getElementById('miniGrip'), miniBar);
 
 // ---------------------------------------------------------------- boot ----
 

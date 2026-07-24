@@ -1,4 +1,4 @@
-// Discord Annotate - WebSocket relay / sync server.
+// Screenshare Annotate - WebSocket relay / sync server.
 //
 // The server is intentionally dumb: it holds per-room state (the sharer's
 // canvas dimensions + the list of committed shapes) so late joiners can be
@@ -18,6 +18,28 @@ const JOIN_TOKEN = process.env.JOIN_TOKEN || null;
 
 const server = http.createServer((req, res) => {
   if (req.url === '/health') { res.writeHead(200); res.end('ok'); return; }
+
+  // /j/<room> -> a clickable https page that redirects into the desktop app's
+  // screenshare-annotate:// deep link so anyone can join a room from a shared link.
+  const m = req.url && req.url.match(/^\/j\/([^/?#]+)/);
+  if (m) {
+    const room = decodeURIComponent(m[1]);
+    const deep = 'screenshare-annotate://join?room=' + encodeURIComponent(room);
+    const safeRoom = room.replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Screenshare Annotate</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:-apple-system,Segoe UI,sans-serif;background:#101318;color:#e6e8ec;text-align:center;padding:60px 20px">
+<script>window.location.href=${JSON.stringify(deep)};</script>
+<h2 style="margin:0 0 8px">Opening Screenshare Annotate…</h2>
+<p style="color:#8b93a1">Joining room: <b style="color:#e6e8ec">${safeRoom}</b> as a viewer.</p>
+<p style="margin-top:24px">If nothing happens, <a style="color:#5170ff" href="${deep}">click here</a> (make sure Screenshare Annotate is installed).</p>
+</body></html>`);
+    return;
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('Screenshare Annotate sync server is running.\n');
 });
@@ -29,7 +51,7 @@ const rooms = new Map();
 
 function getRoom(name) {
   if (!rooms.has(name)) {
-    rooms.set(name, { canvas: null, shapes: [], calibration: false, clients: new Set() });
+    rooms.set(name, { canvas: null, shareType: null, shapes: [], calibration: false, clients: new Set() });
   }
   return rooms.get(name);
 }
@@ -67,6 +89,7 @@ wss.on('connection', (ws, req) => {
         type: 'welcome',
         userId: ws.userId,
         canvas: room.canvas,
+        shareType: room.shareType,
         shapes: room.shapes,
         calibration: room.calibration,
       }));
@@ -81,7 +104,8 @@ wss.on('connection', (ws, req) => {
     switch (m.type) {
       case 'canvas-info':
         room.canvas = { width: m.width, height: m.height };
-        broadcast(room, { type: 'canvas-info', width: m.width, height: m.height }, ws);
+        if (m.shareType) room.shareType = m.shareType;
+        broadcast(room, { type: 'canvas-info', width: m.width, height: m.height, shareType: room.shareType }, ws);
         break;
 
       case 'draw':
@@ -132,4 +156,4 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(PORT, () => console.log(`Discord Annotate sync server listening on :${PORT}`));
+server.listen(PORT, () => console.log(`Screenshare Annotate sync server listening on :${PORT}`));
